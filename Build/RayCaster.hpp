@@ -8,28 +8,32 @@
 #define INCREASE_MOUSE_ACCURACY
 #include "ConsoleUtilities.h"
 
-//#include "RayCasterThread.hpp"
+#include "RayCasterThread.hpp"
+#include "Movement.hpp"
 
 class RayCaster
 {
 	uint32 state; //0 = good, non zero = error
 	cg::Image texture;
 
-	const float fovW = 90.f, fovH = 60.f;
+	FPVector2D fov;
 	const float speed = 2.5f;
-	FPVector3D rotation; //z rotation doesn't work
+	FPVector3D rotation; //z rotation doesn't work (roll)
 	std::vector<std::vector<std::vector<bool>>> map;
 	FPVector3D pos;
-	const float rayMax = 7.5f;
-
+	const float rayMax = 7.5f, rayStep = 0.05f;
+	float elapsedTime = 0.f;
+	
 	cg::ConsoleGraphics* graphics;
-
+	std::deque<RCThreadData> rcThreadData;
+	std::deque<HANDLE> threads;
+	bool running = true;
 	protected:
 
 	public:
 		RayCaster(int nArgs, char** args)
 		{
-			graphics = new cg::ConsoleGraphics(1920, 1080, true, 8, true);
+			graphics = new cg::ConsoleGraphics(1920, 1080, true, 6, true);
 			graphics->enableAlpha();
 
 			state = 0;
@@ -39,6 +43,7 @@ class RayCaster
 
 			rotation = FPVector3D(0.f, 0.f, 0.f);
 			pos = FPVector3D(3.5f, 0.5f, 1.5f);
+			fov = FPVector2D(90.f, 60.f);
 
 			map.resize(3);
 			map[0].resize(9);
@@ -65,12 +70,54 @@ class RayCaster
 			map[2][0] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][1] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][2] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
-			map[2][3] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+			map[2][3] = {1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][4] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][5] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][6] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][7] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 			map[2][8] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+			uint32 threadsToCreate = 4;
+			for (uint32 i = 0, posY = 0; i < threadsToCreate; i++)
+			{
+				RCThreadData rctd;
+				rctd.startY = posY;
+
+				uint32 h;
+				if (i == threadsToCreate - 1){h = graphics->getHeight() - posY;
+				} else h = graphics->getHeight() / threadsToCreate;
+				posY += h;
+				rctd.height = h;
+
+				rctd.graphics = graphics;
+				rctd.fov = &fov;
+				rctd.map = &map;
+				FPVector3D mapBounds(map[0].size(), map.size(), map[0][0].size());
+				rctd.mapBounds = mapBounds;
+				rctd.pos = &pos;
+				rctd.rot = &rotation;
+				rctd.rayMax = rayMax;
+				rctd.rayStep = rayStep;
+				rctd.texture = texture;
+
+				std::string drawNextStr = "DrawNext" + std::to_string(i);
+				std::string hasDrawnStr = "HasDrawn" + std::to_string(i);
+				rctd.drawNext = CreateEvent(NULL, true, false, drawNextStr.c_str());
+				rctd.hasDrawn = CreateEvent(NULL, true, false, hasDrawnStr.c_str());
+
+				rctd.isRunning = &this->running;
+
+				rcThreadData.push_back(rctd);
+			}
+
+			for (auto& td : rcThreadData)
+			{
+				threads.push_back(CreateThread(NULL, 0, RCThread, reinterpret_cast<void*>(&td), 0, NULL));
+			}
+		}
+		~RayCaster()
+		{
+			delete graphics;
 		}
 
 		bool isRunning(void){return state == 0;
@@ -90,40 +137,9 @@ class RayCaster
 
 			if (GetAsyncKeyState(VK_ESCAPE)){state = 1;
 			}
-			float movDist = 2.5f;
-			if (GetAsyncKeyState(VK_UP))
-			{
-				FPVector3D dir;
-				dir.fromAngle(degToRad(-rotation.x), 0.f);
-				pos.x += dir.x * movDist * dT;
-				pos.y += dir.y * movDist * dT;
-				pos.z += dir.z * movDist * dT;
-			}
-			if (GetAsyncKeyState(VK_DOWN))
-			{
-				FPVector3D dir;
-				dir.fromAngle(degToRad(-rotation.x + 180.f), 0.f);
-				pos.x += dir.x * movDist * dT;
-				pos.y += dir.y * movDist * dT;
-				pos.z += dir.z * movDist * dT;
-			}
-			if (GetAsyncKeyState(VK_LEFT))
-			{
-				FPVector3D dir;
-				dir.fromAngle(degToRad(-rotation.x + 90.f), 0.f);
-				pos.x += dir.x * movDist * dT;
-				pos.y += dir.y * movDist * dT;
-				pos.z += dir.z * movDist * dT;
-			}
-			if (GetAsyncKeyState(VK_RIGHT))
-			{
-				FPVector3D dir;
-				dir.fromAngle(degToRad(-rotation.x + 270.f), 0.f);
-				pos.x += dir.x * movDist * dT;
-				pos.y += dir.y * movDist * dT;
-				pos.z += dir.z * movDist * dT;
 
-			}
+			float spd = 2.5f;
+			updateMovement(pos, rotation, spd, dT);
 
 			//if (GetAsyncKeyState('Q'))
 			//{
@@ -139,12 +155,15 @@ class RayCaster
 			}
 			rotation.x = fmod(rotation.x, 360.f);
 
-			//posY = sinf(degToRad(rotation)) - 1.f;
+			//pos.y = 0.5f * sinf(degToRad(elapsedTime * 50.f)) + 1.f;
 			std::string out = "(" + std::to_string(rotation.x) + ")[" + std::to_string(pos.x) + ", " + std::to_string(pos.y);
 			out += ", " + std::to_string(pos.z) + "] FPS:"+std::to_string(1/dT);
 			graphics->setTitle(out);
 			mouseX = cu::cursor.x;
 			mouseY = cu::cursor.y;
+
+			elapsedTime += dT;
+
 			return;
 		}
 
@@ -152,95 +171,17 @@ class RayCaster
 		{
 			if (state != 0){return;
 			}
+
 			graphics->clear();
 
-			FPVector3D dir, ray;
-			float rotWStep = fovW / graphics->getWidth();
-			float rotHStep = fovH / graphics->getHeight();
-			for (uint32 y = 0; y < graphics->getHeight(); y++)
+			for (auto& d : rcThreadData)
 			{
-				for (uint32 x = 0; x < graphics->getWidth(); x++)
-				{
-					FPVector3D rayRot(-(fovW / 2) + (rotWStep * x), -(fovH / 2) + (rotHStep * y), 0.f);
-
-					dir.fromAngle(degToRad(-(rotation.x + rayRot.x)), degToRad(-(rotation.y + rayRot.y)));
-					ray = pos;
-
-					float rayStep = 0.05f;
-
-					for (float rayDist = 0.f; rayDist < rayMax; rayDist += rayStep)
-					{
-						ray.x += rayStep * dir.x;
-						ray.y += rayStep * dir.y;
-						ray.z += rayStep * dir.z;
-						//rayStep *= 2.f;
-
-						bool negative = (ray.x < 0.f || ray.y < 0.f || ray.z < 0.f);
-						bool inBounds = (ray.x < map[0].size() && ray.y < map.size() && ray.z < map[0][0].size());
-						if (negative || (inBounds && map[trunc(ray.y)][trunc(ray.x)][trunc(ray.z)]))
-						{
-							//rayDist *= cosf(degToRad(-rayRot.x)) * cosf(degToRad(-rayRot.y));
-							float a = 1.f - (rayDist / rayMax);
-							uint8 _a = a * 255;
-							graphics->drawPixel(x, y, cg::BGR(_a, _a, _a), 255);
-
-							float d1 = fabs(ray.x - round(ray.x));
-							float d2 = fabs(ray.z - round(ray.z));
-
-							float texX, texY = ray.y;
-
-							if (d1 < d2) //Intersection at X boundary, use Z and X
-							{
-								texX = ray.z;
-							}
-							else //Intersection at Z boundary, use X and X
-							{
-								texX = ray.x;
-							}
-
-							if (negative)
-							{
-								texX = ray.x;
-								texY = ray.z;
-								auto im = cg::InterpolationMethod::Bisinusoidal;
-								auto em = cg::ExtrapolationMethod::Repeat;
-								graphics->drawPixel(x, y, texture.samplePixel(texX, texY, im, em).first, _a);
-							}
-							else
-							{
-								auto im = cg::InterpolationMethod::Bisinusoidal;
-								auto em = cg::ExtrapolationMethod::Repeat;
-								graphics->drawPixel(x, y, texture.samplePixel(texX, texY, im, em).first, _a);
-							}
-
-							//float d1 = fabs(ray.x - round(ray.x));
-							//float d2 = fabs(ray.z - round(ray.z));
-							//float d3 = fabs(ray.y - round(ray.y));
-							//
-							//float texX, texY = ray.y;
-							//uint32 t;
-							//
-							//if (d1 < d2 && d2 < d3) //Intersection at X boundary, use Z and X
-							//{
-							//	texX = ray.z;
-							//}
-							//else if (d2 < d1 && d2 < d3) //Intersection at Z boundary, use X and X
-							//{
-							//	texX = ray.x;
-							//}
-							//else //Intersection at Y boundary, use Z as X and X as Y
-							//{
-							//	texX = ray.z;
-							//	texY = ray.x;
-							//}
-							//
-							//auto im = cg::InterpolationMethod::Bisinusoidal;
-							//auto em = cg::ExtrapolationMethod::Repeat;
-							//graphics->drawPixel(x, y, texture.samplePixel(texX, texY, im, em).first, _a);
-							break;
-						}
-					}
-				}
+				ResetEvent(d.hasDrawn);
+				SetEvent(d.drawNext);
+			}
+			for (auto& d : rcThreadData)
+			{
+				WaitForSingleObject(d.hasDrawn, 30);
 			}
 
 			cg::Image mmap(map[0].size(), map[0][0].size(), cg::BGR(0, 255, 0));
@@ -266,6 +207,29 @@ class RayCaster
 
 		uint32 close(void)
 		{
+			//Allow threads to close normally
+			this->running = false;
+			for (auto& e : rcThreadData)
+			{
+				SetEvent(e.drawNext);
+			}
+
+			for (HANDLE& t : threads)
+			{
+				if (WaitForSingleObject(t, 500) == WAIT_TIMEOUT)
+				{
+					std::cout << "Thread has timed out, terminating." << std::endl;
+					TerminateThread(t, 2);
+				}
+				CloseHandle(t);
+			}
+
+			for (auto& e : rcThreadData)
+			{
+				CloseHandle(e.drawNext);
+				CloseHandle(e.hasDrawn);
+			}
+
 			return state;
 		}
 };

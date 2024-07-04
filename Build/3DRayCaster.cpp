@@ -1,3 +1,5 @@
+#undef UNICODE
+
 #include "RayCaster.hpp"
 
 int main(int nArgs, char **args)
@@ -13,5 +15,6 @@ int main(int nArgs, char **args)
         rc.draw();
         dt = hrc.getElapsedTimeAsSeconds();
     }
+
     return rc.close();
 }
